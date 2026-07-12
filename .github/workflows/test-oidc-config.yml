@@ -1,0 +1,34 @@
+name: Test AWS OIDC Connection
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-connection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::242108886910:role/aws-devops-demo
+          aws-region: us-east-1
+
+      - name: Confirm identity
+        run: |
+          echo "Successfully assumed role via OIDC:"
+          aws sts get-caller-identity
+
+      - name: List CloudFormation stacks (sanity check)
+        run: |
+          aws cloudformation list-stacks \
+            --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
+            --query "StackSummaries[].StackName" \
+            --output table
