@@ -28,6 +28,21 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Clear stack if stuck in a failed state
+        run: |
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+
+          echo "Current stack status: $STATUS"
+
+          if [ "$STATUS" == "ROLLBACK_COMPLETE" ] || [ "$STATUS" == "CREATE_FAILED" ] || [ "$STATUS" == "DELETE_FAILED" ]; then
+            echo "Stack is stuck in $STATUS, deleting it before redeploying..."
+            aws cloudformation delete-stack --stack-name "$STACK_NAME" --region "$AWS_REGION"
+            aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME" --region "$AWS_REGION"
+          fi
+
       - name: Deploy CloudFormation stack
         run: |
           aws cloudformation deploy \
