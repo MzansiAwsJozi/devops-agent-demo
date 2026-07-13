@@ -1,0 +1,52 @@
+name: Destroy DevOps Agent failure demos
+
+on:
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: Which demo stack(s) to delete
+        type: choice
+        options:
+          - both
+          - ec2
+          - lambda
+        default: both
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Delete EC2 CPU test stack
+        if: ${{ inputs.demo == 'ec2' || inputs.demo == 'both' }}
+        run: |
+          aws cloudformation delete-stack \
+            --stack-name AWS-DevOpsAgent-EC2-Test \
+            --region "$AWS_REGION"
+
+          aws cloudformation wait stack-delete-complete \
+            --stack-name AWS-DevOpsAgent-EC2-Test \
+            --region "$AWS_REGION"
+
+      - name: Delete Lambda error test stack
+        if: ${{ inputs.demo == 'lambda' || inputs.demo == 'both' }}
+        run: |
+          aws cloudformation delete-stack \
+            --stack-name AWS-DevOpsAgent-Lambda-Test \
+            --region "$AWS_REGION"
+
+          aws cloudformation wait stack-delete-complete \
+            --stack-name AWS-DevOpsAgent-Lambda-Test \
+            --region "$AWS_REGION"

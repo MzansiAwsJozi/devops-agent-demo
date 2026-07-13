@@ -1,0 +1,54 @@
+name: Deploy AWS DevOps Agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cloudformation/devops-agent-stack.yaml'
+      - '.github/workflows/deploy-devops-agent.yml'
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  STACK_NAME: DevOpsAgentStack
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --template-file cloudformation/devops-agent-stack.yaml \
+            --stack-name "$STACK_NAME" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region "$AWS_REGION"
+
+      - name: Show stack outputs
+        id: outputs
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs' \
+            --region "$AWS_REGION" | tee outputs.json
+
+          agent_space_id=$(jq -r '.[] | select(.OutputKey=="AgentSpaceId") | .OutputValue' outputs.json)
+          echo "agent_space_id=$agent_space_id" >> "$GITHUB_OUTPUT"
+
+      - name: Verify agent space
+        run: |
+          aws devops-agent get-agent-space \
+            --agent-space-id "${{ steps.outputs.outputs.agent_space_id }}" \
+            --region "$AWS_REGION"

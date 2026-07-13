@@ -1,0 +1,98 @@
+name: Deploy DevOps Agent failure demos
+
+on:
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: Which demo(s) to deploy
+        type: choice
+        options:
+          - both
+          - ec2
+          - lambda
+        default: both
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy EC2 CPU test stack
+        if: ${{ inputs.demo == 'ec2' || inputs.demo == 'both' }}
+        run: |
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters Name=isDefault,Values=true \
+            --query 'Vpcs[0].VpcId' --output text --region "$AWS_REGION")
+
+          if [ -z "$VPC_ID" ] || [ "$VPC_ID" == "None" ]; then
+            echo "::error::No default VPC found in this account/region. Create a VPC or pass VpcId/SubnetId explicitly." >&2
+            exit 1
+          fi
+
+          SUBNET_ID=$(aws ec2 describe-subnets \
+            --filters Name=vpc-id,Values="$VPC_ID" \
+            --query 'Subnets[0].SubnetId' --output text --region "$AWS_REGION")
+
+          if [ -z "$SUBNET_ID" ] || [ "$SUBNET_ID" == "None" ]; then
+            echo "::error::No subnet found in default VPC $VPC_ID." >&2
+            exit 1
+          fi
+
+          echo "Using VpcId=$VPC_ID SubnetId=$SUBNET_ID"
+
+          aws cloudformation deploy \
+            --template-file cloudformation/ec2-cpu-test.yaml \
+            --stack-name AWS-DevOpsAgent-EC2-Test \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides VpcId="$VPC_ID" SubnetId="$SUBNET_ID" \
+            --region "$AWS_REGION"
+
+          aws cloudformation describe-stacks \
+            --stack-name AWS-DevOpsAgent-EC2-Test \
+            --query 'Stacks[0].Outputs' \
+            --region "$AWS_REGION"
+
+      - name: Deploy Lambda error test stack
+        if: ${{ inputs.demo == 'lambda' || inputs.demo == 'both' }}
+        run: |
+          aws cloudformation deploy \
+            --template-file cloudformation/lambda-error-test.yaml \
+            --stack-name AWS-DevOpsAgent-Lambda-Test \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --region "$AWS_REGION"
+
+          aws cloudformation describe-stacks \
+            --stack-name AWS-DevOpsAgent-Lambda-Test \
+            --query 'Stacks[0].Outputs' \
+            --region "$AWS_REGION"
+
+      - name: Next steps
+        run: |
+          echo "Demo stacks deployed. Alarms take a few minutes to flip to ALARM state."
+          echo ""
+          if [ "${{ inputs.demo }}" == "ec2" ] || [ "${{ inputs.demo }}" == "both" ]; then
+            echo "EC2 test: the CPU stress script runs automatically ~5 minutes after boot."
+            echo "  To re-run manually: connect via EC2 console -> Session Manager, then run ./cpu-stress-test.sh"
+            echo "  Watch for the AWS-DevOpsAgent-EC2-CPU-Test alarm in CloudWatch."
+          fi
+          if [ "${{ inputs.demo }}" == "lambda" ] || [ "${{ inputs.demo }}" == "both" ]; then
+            echo "Lambda test: trigger it yourself, 3 invocations ~10s apart:"
+            echo "  aws lambda invoke --function-name AWS-DevOpsAgent-test-lambda --payload '{\"test\":\"trigger\"}' response.json --region $AWS_REGION"
+            echo "  Watch for the AWS-DevOpsAgent-Lambda-Error-Test alarm in CloudWatch."
+          fi
+          echo ""
+          echo "When done, run the 'Destroy DevOps Agent failure demos' workflow to clean up."
