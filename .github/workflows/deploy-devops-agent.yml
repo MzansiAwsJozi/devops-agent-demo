@@ -36,6 +36,15 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --region "$AWS_REGION"
 
+      - name: Show failure reason
+        if: failure()
+        run: |
+          aws cloudformation describe-stack-events \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "StackEvents[?contains(ResourceStatus, 'FAILED')].{Resource:LogicalResourceId,Status:ResourceStatus,Reason:ResourceStatusReason}" \
+            --output table
+
       - name: Show stack outputs
         id: outputs
         run: |
