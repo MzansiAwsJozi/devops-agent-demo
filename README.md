@@ -3,8 +3,60 @@
 CI/CD for deploying an [AWS DevOps Agent](https://aws.amazon.com/devops-agent/) demo environment via CloudFormation, driven by GitHub Actions using OIDC (no static AWS credentials stored in GitHub).
 
 Based on AWS's official guides:
+
 - [Getting started with AWS DevOps Agent using AWS CloudFormation](https://docs.aws.amazon.com/devopsagent/latest/userguide/getting-started-with-aws-devops-agent-getting-started-with-aws-devops-agent-using-aws-cloudformation.html)
 - [Creating a test environment](https://docs.aws.amazon.com/devopsagent/latest/userguide/getting-started-with-aws-devops-agent-creating-a-test-environment.html)
+
+## Architecture
+
+```mermaid
+flowchart TD
+    Dev["Push to main / workflow_dispatch"] --> GHA["GitHub Actions workflow"]
+    GHA -->|"OIDC token"| STS["AWS STS AssumeRoleWithWebIdentity"]
+    STS --> Role["IAM Role: aws-devops-demo\n(trust scoped to this repo)"]
+
+    Role --> CFN["aws cloudformation deploy"]
+
+    subgraph Persistent["DevOpsAgentStack (persistent)"]
+        SpaceRole["DevOpsAgentSpaceRole"]
+        OpRole["DevOpsOperatorRole"]
+        Space["AWS::DevOpsAgent::AgentSpace"]
+        Assoc["Monitor Association\n(this account)"]
+        SpaceRole --> Space
+        OpRole --> Space
+        Space --> Assoc
+    end
+
+    subgraph EC2Demo["AWS-DevOpsAgent-EC2-Test (ephemeral)"]
+        EC2["t3.micro\n+ CPU stress script"]
+        EC2Alarm["CloudWatch Alarm\nCPUUtilization > 70%"]
+        EC2 --> EC2Alarm
+    end
+
+    subgraph LambdaDemo["AWS-DevOpsAgent-Lambda-Test (ephemeral)"]
+        Lambda["Lambda\n(always raises)"]
+        LambdaAlarm["CloudWatch Alarm\nErrors > 0"]
+        Lambda --> LambdaAlarm
+    end
+
+    CFN --> Persistent
+    CFN -.->|"deploy-failure-demos.yml"| EC2Demo
+    CFN -.->|"deploy-failure-demos.yml"| LambdaDemo
+
+    Agent["AWS DevOps Agent service"] -->|assumes| SpaceRole
+    Agent -->|assumes| OpRole
+    EC2Alarm -.->|monitored via| Assoc
+    LambdaAlarm -.->|monitored via| Assoc
+
+    WebApp["DevOps Agent web app\n(Operator App)"] --> Space
+    You["You"] -->|"Start Investigation"| WebApp
+    You -.->|"trigger failure manually"| EC2
+    You -.->|"aws lambda invoke"| Lambda
+```
+
+- **Solid arrows** = always deployed (the Agent Space stack).
+- **Dashed arrows** = only happen when you run `deploy-failure-demos.yml` / trigger a failure manually.
+- The Agent Space never touches the EC2/Lambda resources directly — it discovers them through the account-level monitor association and CloudWatch, the same way it would with real production resources.
 
 ## Repo layout
 
@@ -27,26 +79,30 @@ cloudformation/
 - That role needs permissions to create/delete: IAM roles (`CAPABILITY_NAMED_IAM`), the `AWS::DevOpsAgent::AgentSpace`/`AWS::DevOpsAgent::Association` resource types, EC2 instances/security groups/key pairs, Lambda functions, and CloudWatch alarms.
 - Two GitHub Actions secrets on this repo (Settings → Secrets and variables → Actions):
 
-  | Secret | Value |
-  |---|---|
+  | Secret         | Value                                                                       |
+  | -------------- | --------------------------------------------------------------------------- |
   | `AWS_ROLE_ARN` | ARN of the OIDC role, e.g. `arn:aws:iam::<account-id>:role/aws-devops-demo` |
-  | `AWS_REGION` | AWS region to deploy into, e.g. `us-east-1` |
+  | `AWS_REGION`   | AWS region to deploy into, e.g. `us-east-1`                                 |
 
 ## Workflows
 
 ### `test-oidc-config.yml`
+
 Runs on every push to `main`. Confirms the OIDC role can be assumed and lists existing CloudFormation stacks. No resources created.
 
 ### `deploy-devops-agent.yml`
+
 Runs on push to `main` (when `cloudformation/devops-agent-stack.yaml` or the workflow itself changes), or manually via `workflow_dispatch`. Deploys the `DevOpsAgentStack`: the Agent Space, its IAM roles, and a monitor association for this account. This is the one-time setup step — after it succeeds you have a working Agent Space.
 
 ### `deploy-failure-demos.yml`
+
 Manual only (`workflow_dispatch`), with a `demo` input (`both` / `ec2` / `lambda`). Deploys one or both intentionally-broken stacks so the Agent has something to investigate:
 
 - **EC2 CPU test** (`AWS-DevOpsAgent-EC2-Test`) — auto-discovers the account's default VPC/subnet, launches a `t3.micro` that runs a CPU stress script ~5 minutes after boot and trips a `CPUUtilization > 70%` alarm. Auto-terminates after 2 hours.
 - **Lambda error test** (`AWS-DevOpsAgent-Lambda-Test`) — deploys a Lambda that always raises, paired with an `Errors > 0` alarm.
 
 Triggering the actual failure is manual by design (so you control demo timing):
+
 - EC2: the stress script runs on its own, or re-run it via Session Manager (`./cpu-stress-test.sh`).
 - Lambda: invoke it 2-3 times, ~10s apart:
   ```
@@ -55,6 +111,7 @@ Triggering the actual failure is manual by design (so you control demo timing):
   ```
 
 ### `destroy-failure-demos.yml`
+
 Manual only, same `demo` input. Deletes the corresponding demo stack(s). Run this after each demo to avoid leaving resources running.
 
 ## Running a demo end to end
@@ -68,4 +125,4 @@ Manual only, same `demo` input. Deletes the corresponding demo stack(s). Run thi
 ## Notes
 
 - All AWS auth is via GitHub OIDC — no long-lived AWS access keys are stored anywhere in this repo.
-- Region and role ARN are read from GitHub Actions secrets (`AWS_REGION`, `AWS_ROLE_ARN`), not hardcoded in the workflow files.
+- Region and role ARN are read from GitHub Actions secrets (`AWS_REGION`, `AWS_ROLE_ARN`), not hardcoded in the workflow files..
