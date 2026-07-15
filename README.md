@@ -1,4 +1,4 @@
-# devops-agent-demo
+# Devops Agent in Action
 
 CI/CD for deploying an [AWS DevOps Agent](https://aws.amazon.com/devops-agent/) demo environment via CloudFormation, driven by GitHub Actions using OIDC (no static AWS credentials stored in GitHub).
 
